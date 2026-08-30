@@ -418,6 +418,8 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
+    // PopupWindow is non-focusable by default; enable keyboard input for searchField.
+    focusable: true
     contentWidth: popup.fittedContentWidth(Style.space(400))
     contentHeight: popup.fittedContentHeight(content.implicitHeight)
 
