@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "youtube.control-center",
+  "name": "YouTube Control Center",
+  "version": "1.1.0",
+  "author": "YouTube Control Center contributors",
+  "description": "Control YouTube and YouTube Music independently, then hand playback between them without overlapping audio",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "YouTube Control Center",
+    "description": "Two independent players, exact per-app volume, and one-click playback handoff",
+    "category": "Media",
+    "allowMultiple": false
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.media"
+  }
+}
