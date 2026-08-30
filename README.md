@@ -43,7 +43,7 @@ The plugin stores its two Chromium profiles under `${XDG_DATA_HOME:-~/.local/sha
 - PipeWire for exact per-player volume and mute controls
 - Hyprland and `uwsm-app`, included with Omarchy
 
-No YouTube API key is required. The plugin launches local Chromium app windows, reads their standard MPRIS playback state, matches their PipeWire streams, and uses Hyprland to focus or close the chosen window. It does not install packages, use `sudo`, or overwrite user configuration.
+No YouTube API key is required. The plugin launches local Chromium app windows, reads their standard MPRIS playback state, matches their PipeWire streams, and uses Hyprland to focus or close the chosen window. It runs entirely without elevated privileges and does not install packages or overwrite user configuration.
 
 ## License
 
