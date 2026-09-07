@@ -2,6 +2,8 @@
 
 YouTube and YouTube Music finally behave like two real desktop players—not two tabs fighting over the same controls.
 
+![YouTube Control Center — hand playback between YouTube and YouTube Music](preview.png)
+
 ![YouTube Control Center widget showing independent YouTube and YouTube Music players](preview-widget.png)
 
 ## What makes it different
