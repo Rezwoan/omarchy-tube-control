@@ -412,14 +412,15 @@ BarWidget {
     }
   }
 
-  PopupCard {
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
-    // PopupWindow is non-focusable by default; enable keyboard input for searchField.
-    focusable: true
+    // PopupWindow (xdg-popup) never gets map-time keyboard focus; KeyboardPanel
+    // is the layer-shell variant that primes focus for searchField.
+    focusTarget: searchField
     contentWidth: popup.fittedContentWidth(Style.space(400))
     contentHeight: popup.fittedContentHeight(content.implicitHeight)
 
