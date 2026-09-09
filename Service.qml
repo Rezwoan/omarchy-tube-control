@@ -205,6 +205,17 @@ Item {
     }
   }
 
+  function hasWindowMatchingClass(pattern) {
+    if (!pattern) return false
+    var re
+    try { re = new RegExp(pattern) } catch (error) { return false }
+    for (var i = 0; i < mediaWindows.length; i++) {
+      var w = mediaWindows[i]
+      if (w && re.test(String(w.class || ""))) return true
+    }
+    return false
+  }
+
   function focusPlayerWindow(player) {
     if (!player) return false
 
@@ -236,6 +247,37 @@ Item {
     }
     return false
   }
+
+  // Players launched by this plugin always open into a dedicated hidden
+  // Hyprland "special workspace" per service (see BarWidget.qml's
+  // registerWindowRules) so playback starts headless. Toggling that
+  // special workspace shows/hides the window as a small floating player
+  // without touching playback at all. Anything else (e.g. a player from a
+  // regular browser tab, not one of this plugin's app windows) has no
+  // dedicated special workspace, so fall back to a normal focus/raise.
+  function specialWorkspaceForGroup(group) {
+    if (group === "youtube") return "tube-control-youtube"
+    if (group === "music") return "tube-control-music"
+    return ""
+  }
+
+  function toggleServiceWindow(player) {
+    if (!player) return false
+
+    var wsName = specialWorkspaceForGroup(playerGroup(player))
+    if (wsName && !toggleWorkspaceProcess.running) {
+      toggleWorkspaceProcess.command = [
+        "hyprctl",
+        "dispatch",
+        "hl.dsp.workspace.toggle_special(" + JSON.stringify(wsName) + ")"
+      ]
+      toggleWorkspaceProcess.running = true
+      return true
+    }
+
+    return focusPlayerWindow(player)
+  }
+
   function canClosePlayer(player) {
     return !!(player && (clientForPlayer(player) || player.canQuit))
   }
@@ -780,6 +822,10 @@ Item {
   }
   Process {
     id: closeWindowProcess
+    running: false
+  }
+  Process {
+    id: toggleWorkspaceProcess
     running: false
   }
   Process {

@@ -33,18 +33,6 @@ BarWidget {
   readonly property bool opened: popupOpen
   property bool launchFailed: false
 
-  // The plugin's own directory, so bin/detect-default-browser.sh can be
-  // found no matter where this plugin checkout/symlink lives.
-  readonly property string pluginDir: {
-    var u = Qt.resolvedUrl(".").toString()
-    return u.indexOf("file://") === 0 ? u.substring(7) : u
-  }
-
-  property bool browserInfoReady: false
-  property string defaultBrowserFamily: "other"
-  property var defaultBrowserExec: []
-  property var pendingLaunch: null
-
   function open() {
     popupOpen = true
   }
@@ -71,8 +59,21 @@ BarWidget {
   }
 
   function showPlayer(player) {
-    if (mediaService && player && mediaService.focusPlayerWindow(player))
+    if (mediaService && player && mediaService.toggleServiceWindow(player))
       popupOpen = false
+  }
+
+  // Toggles a service's special workspace directly by name, independent of
+  // whether an MPRIS player currently exists for it — this is what lets a
+  // freshly launched, not-yet-playing window be revealed at all.
+  function toggleGroupWindow(specialWorkspace) {
+    if (!specialWorkspace || toggleGroupProcess.running) return
+    toggleGroupProcess.command = [
+      "hyprctl", "dispatch",
+      "hl.dsp.workspace.toggle_special(" + JSON.stringify(specialWorkspace) + ")"
+    ]
+    toggleGroupProcess.running = true
+    popupOpen = false
   }
   function playerVolumeAvailable(player) {
     return !!(mediaService && player && mediaService.playerAudioAvailable(player))
@@ -108,73 +109,121 @@ BarWidget {
     return "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
   }
 
-  function detectDefaultBrowser() {
-    if (browserDetectProcess.running) return
-    browserDetectProcess.running = true
-  }
-
-  function applyBrowserInfo(raw) {
-    try {
-      var parsed = JSON.parse(String(raw || "{}"))
-      defaultBrowserFamily = parsed.family || "other"
-      var execLine = String(parsed.exec || "").trim()
-      defaultBrowserExec = execLine ? execLine.split(/\s+/) : []
-    } catch (error) {
-      defaultBrowserFamily = "other"
-      defaultBrowserExec = []
+  // Each service (YouTube / YouTube Music) gets its own isolated Chromium
+  // profile, so Chromium starts a genuinely separate OS process per
+  // service. This matters beyond sign-in isolation: Chromium exposes
+  // exactly one MPRIS player PER PROCESS, so separate processes are the
+  // only way to get independent play/pause/volume/close per service.
+  // Sharing a browser process (e.g. the user's already-running default
+  // browser) collapses both services into a single shared player.
+  readonly property var serviceSpecs: ({
+    youtube: {
+      profile: "youtube",
+      appClass: "^chrome-www\\.youtube\\.com__.*$",
+      specialWorkspace: "tube-control-youtube"
+    },
+    music: {
+      profile: "youtube-music",
+      appClass: "^chrome-music\\.youtube\\.com__.*$",
+      specialWorkspace: "tube-control-music"
     }
-    browserInfoReady = true
+  })
 
-    var pending = pendingLaunch
-    pendingLaunch = null
-    if (pending) launchBrowserApp(pending.url, pending.appClass)
+  // Registers a permanent window rule per service: float, a compact
+  // mini-player size, and — critically — open directly into a hidden
+  // Hyprland "special workspace". That's what makes playback headless by
+  // default: the window exists and plays from the moment it opens, but
+  // is never shown until the player row's toggle button reveals it.
+  function registerWindowRules() {
+    var stmts = []
+    for (var key in serviceSpecs) {
+      var spec = serviceSpecs[key]
+      var ruleVar = "_G.tube_control_rule_" + spec.profile.replace(/-/g, "_")
+      stmts.push(
+        "if " + ruleVar + " then " + ruleVar + ":set_enabled(false) end; "
+        + ruleVar + " = hl.window_rule({ "
+        + "name = " + JSON.stringify("tube-control-" + spec.profile) + ", "
+        + "match = { class = " + JSON.stringify(spec.appClass) + " }, "
+        + "workspace = " + JSON.stringify("special:" + spec.specialWorkspace) + ", "
+        + "float = true, "
+        + "size = \"640 420\" })"
+      )
+    }
+    windowRuleProcess.command = ["hyprctl", "eval", stmts.join("; ")]
+    windowRuleProcess.running = true
   }
 
-  // Launches the URL in whichever browser the desktop has set as default,
-  // so it reuses that browser's existing YouTube/YouTube Music sign-in
-  // instead of a separate, freshly-signed-out browser profile. Chromium-
-  // family default browsers (Chrome, Chromium, Brave, Vivaldi, Edge, ...)
-  // get a real --app= window, which keeps the per-service window isolation
-  // (independent MPRIS/PipeWire matching, focus, close) the widget relies
-  // on; anything else falls back to a normal xdg-open window.
-  function launchBrowserApp(url, appClass) {
-    if (launchProcess.running) return
-    launchFailed = false
+  // A brand-new Hyprland special workspace shows itself the moment the
+  // first window ever lands in it, even though the window_rule sends it
+  // straight there — so a genuinely fresh launch briefly flashes visible.
+  // Once hidden (or once it already has a window), it stays exactly as
+  // last left, so this only ever needs to run once per service per
+  // Hyprland session. Reusing an already-open window (the profile's
+  // browser process is still running, e.g. a second search) never goes
+  // through this at all, so it can't yank the window away from someone
+  // currently watching it.
+  property var pendingHide: null
 
-    if (!browserInfoReady) {
-      pendingLaunch = { url: url, appClass: appClass }
-      detectDefaultBrowser()
+  function checkPendingHide() {
+    if (!pendingHide || pendingHideCheckProcess.running) return
+    pendingHideCheckProcess.running = true
+  }
+
+  // Polls hyprctl directly (rather than the service's cached window list,
+  // which only refreshes on player/popup events) so this reliably notices
+  // the new window within a few hundred ms of it actually appearing.
+  function applyPendingHideCheck(raw) {
+    var pending = pendingHide
+    if (!pending) return
+
+    var found = false
+    try {
+      var list = JSON.parse(String(raw || "[]"))
+      var re = new RegExp(pending.appClass)
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] && re.test(String(list[i].class || ""))) { found = true; break }
+      }
+    } catch (error) {
+      found = false
+    }
+
+    if (found) {
+      hideSpecialProcess.command = [
+        "hyprctl", "dispatch",
+        "hl.dsp.workspace.toggle_special(" + JSON.stringify(pending.specialWorkspace) + ")"
+      ]
+      hideSpecialProcess.running = true
+      pendingHide = null
       return
     }
 
-    var isAppCapable = defaultBrowserFamily === "chromium" && defaultBrowserExec.length > 0
-    var commandParts = isAppCapable
-      ? defaultBrowserExec.concat([
-          "--no-first-run", "--no-default-browser-check", "--new-window", "--app=" + url
-        ])
-      : ["xdg-open", url]
-    var browserCommand = "uwsm-app -- " + commandParts.map(shellQuote).join(" ")
+    pending.attempts += 1
+    if (pending.attempts >= 8) { pendingHide = null; return } // gave up quietly after ~3.2s
+    pendingHide = pending
+    hideAfterLaunchTimer.restart()
+  }
 
-    var lua
-    if (isAppCapable) {
-      lua = "if _G.tube_control_launch_rule then "
-        + "_G.tube_control_launch_rule:set_enabled(false) end; "
-        + "local ws = hl.get_active_workspace(); "
-        + "assert(ws, \"no active workspace\"); "
-        + "local app_class = " + JSON.stringify(appClass) + "; "
-        + "_G.tube_control_launch_rule = hl.window_rule({ "
-        + "name = \"tube-control-launch\", "
-        + "match = { class = app_class }, "
-        + "workspace = tostring(ws.id) .. \" silent\"}); "
-        + "hl.exec_cmd(" + JSON.stringify(browserCommand) + ")"
-    } else {
-      lua = "hl.exec_cmd(" + JSON.stringify(browserCommand) + ")"
-    }
+  function launchBrowserApp(url, profileName, appClass, specialWorkspace) {
+    if (launchProcess.running) return
+    launchFailed = false
 
-    launchProcess.command = ["hyprctl", "eval", lua]
+    var dataHome = Quickshell.env("XDG_DATA_HOME")
+    if (!dataHome) dataHome = Quickshell.env("HOME") + "/.local/share"
+    var profilePath = dataHome + "/tube-control/" + profileName
+    var browserCommand = "uwsm-app -- /usr/bin/chromium"
+      + " --user-data-dir=" + shellQuote(profilePath)
+      + " --no-first-run --no-default-browser-check --new-window --app=" + shellQuote(url)
+
+    var alreadyRunning = mediaService && mediaService.hasWindowMatchingClass(appClass)
+
+    launchProcess.command = ["hyprctl", "eval", "hl.exec_cmd(" + JSON.stringify(browserCommand) + ")"]
     launchProcess.running = true
-    if (isAppCapable) launchRuleCleanup.restart()
     popupOpen = false
+
+    if (!alreadyRunning) {
+      pendingHide = { appClass: appClass, specialWorkspace: specialWorkspace, attempts: 0 }
+      hideAfterLaunchTimer.restart()
+    }
   }
 
   function launchYoutubeMusic(query) {
@@ -182,7 +231,7 @@ BarWidget {
     var url = cleanQuery === ""
       ? "https://music.youtube.com/"
       : "https://music.youtube.com/search?q=" + encodeURIComponent(cleanQuery)
-    launchBrowserApp(url, "^chrome-music\\.youtube\\.com__.*$")
+    launchBrowserApp(url, serviceSpecs.music.profile, serviceSpecs.music.appClass, serviceSpecs.music.specialWorkspace)
   }
 
   function launchYoutube(query) {
@@ -190,7 +239,7 @@ BarWidget {
     var url = cleanQuery === ""
       ? "https://www.youtube.com/"
       : "https://www.youtube.com/results?search_query=" + encodeURIComponent(cleanQuery)
-    launchBrowserApp(url, "^chrome-www\\.youtube\\.com__.*$")
+    launchBrowserApp(url, serviceSpecs.youtube.profile, serviceSpecs.youtube.appClass, serviceSpecs.youtube.specialWorkspace)
   }
 
   onPopupOpenChanged: {
@@ -205,7 +254,7 @@ BarWidget {
     }
   }
 
-  Component.onCompleted: root.detectDefaultBrowser()
+  Component.onCompleted: root.registerWindowRules()
 
   visible: true
   implicitWidth: youtubeButton.implicitWidth
@@ -350,7 +399,7 @@ BarWidget {
           enabled: playerRow.player && root.mediaService
             && (root.mediaService.clientForPlayer(playerRow.player) || playerRow.player.canRaise)
           opacity: enabled ? 1 : 0.35
-          tooltipText: "Show video window"
+          tooltipText: "Show/hide the floating window (keeps playing either way)"
           onClicked: root.showPlayer(playerRow.player)
         }
 
@@ -412,6 +461,12 @@ BarWidget {
     required property string appName
     required property string appIcon
     required property var players
+    // Present only for services this plugin itself launches (YouTube /
+    // YouTube Music); empty for "Other media". Lets the group be shown
+    // even before any MPRIS player exists yet — a freshly launched,
+    // not-yet-playing window has no player to hang a per-row button off,
+    // so this is the only way to reveal it for that first interaction.
+    property string specialWorkspace: ""
 
     width: parent ? parent.width : 0
     spacing: Style.space(5)
@@ -443,6 +498,14 @@ BarWidget {
         color: Qt.darker(root.bar.foreground, 1.4)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
+      }
+
+      Button {
+        visible: playerGroup.specialWorkspace !== ""
+        iconText: "󰕧"
+        foreground: root.bar.foreground
+        tooltipText: "Show/hide the " + playerGroup.appName + " window (keeps playing either way)"
+        onClicked: root.toggleGroupWindow(playerGroup.specialWorkspace)
       }
     }
 
@@ -538,10 +601,8 @@ BarWidget {
         width: parent.width
         textFormat: Text.PlainText
         text: root.launchFailed
-          ? "Could not open the browser window."
-          : (root.defaultBrowserFamily === "chromium"
-              ? "Opens as an app window in your default browser, already signed in."
-              : "Opens in your default browser. For independent windows and volume, set a Chromium-based browser as default.")
+          ? "Could not open the Chromium app window."
+          : "Opens headless in the background. Sign in once per app, then use the video icon to show or hide it."
         color: root.launchFailed ? Color.urgent : Qt.darker(root.bar.foreground, 1.5)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
@@ -583,12 +644,14 @@ BarWidget {
               appName: "YouTube"
               appIcon: "󰗃"
               players: root.youtubePlayers
+              specialWorkspace: root.serviceSpecs.youtube.specialWorkspace
             }
 
             PlayerGroup {
               appName: "YouTube Music"
               appIcon: "󰝚"
               players: root.musicPlayers
+              specialWorkspace: root.serviceSpecs.music.specialWorkspace
             }
 
             PlayerGroup {
@@ -612,34 +675,34 @@ BarWidget {
   }
 
   Process {
-    id: browserDetectProcess
-    command: [root.pluginDir + "bin/detect-default-browser.sh"]
+    id: windowRuleProcess
     running: false
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.applyBrowserInfo(text)
-    }
   }
 
   Timer {
-    id: launchRuleCleanup
-    interval: 8000
+    id: hideAfterLaunchTimer
+    interval: 400
     repeat: false
-    onTriggered: {
-      if (cleanupProcess.running) return
-      cleanupProcess.command = [
-        "hyprctl",
-        "eval",
-        "if _G.tube_control_launch_rule then "
-          + "_G.tube_control_launch_rule:set_enabled(false); "
-          + "_G.tube_control_launch_rule = nil end"
-      ]
-      cleanupProcess.running = true
-    }
+    onTriggered: root.checkPendingHide()
   }
 
   Process {
-    id: cleanupProcess
+    id: hideSpecialProcess
     running: false
+  }
+
+  Process {
+    id: toggleGroupProcess
+    running: false
+  }
+
+  Process {
+    id: pendingHideCheckProcess
+    command: ["hyprctl", "clients", "-j"]
+    running: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyPendingHideCheck(text)
+    }
   }
 }

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.0
+
+### Changed
+
+- **Reverted to isolated Chromium profiles, one per service** — the 1.2.0
+  default-browser approach turned out to break independent control:
+  Chromium exposes exactly one MPRIS player *per browser process*, so
+  sharing your regular browser's process collapsed YouTube and YouTube
+  Music into a single shared player (only one trackable/controllable at a
+  time, and closing one could affect the other). Separate profiles restore
+  independent play/pause, volume, focus, and close for both services. You
+  sign into each profile once; it stays signed in after that.
+- Profile paths moved to `${XDG_DATA_HOME:-~/.local/share}/tube-control/`.
+
+### Added
+
+- **Headless by default, floating window on demand.** A freshly launched
+  player now opens directly into a hidden Hyprland "special workspace" —
+  it starts playing immediately but stays out of view, so searching for
+  something never interrupts whatever you're doing. The video icon on each
+  player row toggles that window into view as a small floating player, and
+  back into hiding; playback is unaffected either way.
+
 ## 1.2.0
 
 ### Changed

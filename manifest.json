@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "io.github.rezwoan.tube-control",
   "name": "Tube Control",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "Rezwoan",
-  "description": "Control YouTube and YouTube Music independently in your own default browser, then hand playback between them without overlapping audio",
+  "description": "Control YouTube and YouTube Music independently, headless in the background until you show them, then hand playback between them without overlapping audio",
   "kinds": [
     "service",
     "bar-widget"
