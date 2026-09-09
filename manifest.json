@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "youtube.control-center",
-  "name": "YouTube Control Center",
-  "version": "1.1.0",
-  "author": "YouTube Control Center contributors",
-  "description": "Control YouTube and YouTube Music independently, then hand playback between them without overlapping audio",
+  "id": "io.github.rezwoan.tube-control",
+  "name": "Tube Control",
+  "version": "1.2.0",
+  "author": "Rezwoan",
+  "description": "Control YouTube and YouTube Music independently in your own default browser, then hand playback between them without overlapping audio",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,7 +15,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "YouTube Control Center",
+    "displayName": "Tube Control",
     "description": "Two independent players, exact per-app volume, and one-click playback handoff",
     "category": "Media",
     "allowMultiple": false

@@ -6,9 +6,9 @@ import qs.Commons
 
 BarWidget {
   id: root
-  moduleName: "youtube.control-center"
+  moduleName: "io.github.rezwoan.tube-control"
 
-  readonly property var mediaService: bar?.shell?.serviceFor("youtube.control-center")
+  readonly property var mediaService: bar?.shell?.serviceFor("io.github.rezwoan.tube-control")
   readonly property var activePlayer: mediaService ? mediaService.activePlayer : null
   readonly property var sourcePlayers: mediaService ? mediaService.sourcePlayers : []
   readonly property var youtubePlayers: mediaService ? mediaService.playersForGroup("youtube") : []
@@ -32,6 +32,18 @@ BarWidget {
   property bool popupOpen: false
   readonly property bool opened: popupOpen
   property bool launchFailed: false
+
+  // The plugin's own directory, so bin/detect-default-browser.sh can be
+  // found no matter where this plugin checkout/symlink lives.
+  readonly property string pluginDir: {
+    var u = Qt.resolvedUrl(".").toString()
+    return u.indexOf("file://") === 0 ? u.substring(7) : u
+  }
+
+  property bool browserInfoReady: false
+  property string defaultBrowserFamily: "other"
+  property var defaultBrowserExec: []
+  property var pendingLaunch: null
 
   function open() {
     popupOpen = true
@@ -96,30 +108,72 @@ BarWidget {
     return "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
   }
 
-  function launchBrowserApp(url, appClass, profileName) {
+  function detectDefaultBrowser() {
+    if (browserDetectProcess.running) return
+    browserDetectProcess.running = true
+  }
+
+  function applyBrowserInfo(raw) {
+    try {
+      var parsed = JSON.parse(String(raw || "{}"))
+      defaultBrowserFamily = parsed.family || "other"
+      var execLine = String(parsed.exec || "").trim()
+      defaultBrowserExec = execLine ? execLine.split(/\s+/) : []
+    } catch (error) {
+      defaultBrowserFamily = "other"
+      defaultBrowserExec = []
+    }
+    browserInfoReady = true
+
+    var pending = pendingLaunch
+    pendingLaunch = null
+    if (pending) launchBrowserApp(pending.url, pending.appClass)
+  }
+
+  // Launches the URL in whichever browser the desktop has set as default,
+  // so it reuses that browser's existing YouTube/YouTube Music sign-in
+  // instead of a separate, freshly-signed-out browser profile. Chromium-
+  // family default browsers (Chrome, Chromium, Brave, Vivaldi, Edge, ...)
+  // get a real --app= window, which keeps the per-service window isolation
+  // (independent MPRIS/PipeWire matching, focus, close) the widget relies
+  // on; anything else falls back to a normal xdg-open window.
+  function launchBrowserApp(url, appClass) {
     if (launchProcess.running) return
     launchFailed = false
 
-    var dataHome = Quickshell.env("XDG_DATA_HOME")
-    if (!dataHome) dataHome = Quickshell.env("HOME") + "/.local/share"
-    var profilePath = dataHome + "/youtube-control-center/" + profileName
-    var browserCommand = "uwsm-app -- /usr/bin/chromium"
-      + " --user-data-dir=" + shellQuote(profilePath)
-      + " --no-first-run --no-default-browser-check --new-window --app=" + shellQuote(url)
-    var lua = "if _G.youtube_control_center_launch_rule then "
-      + "_G.youtube_control_center_launch_rule:set_enabled(false) end; "
-      + "local ws = hl.get_active_workspace(); "
-      + "assert(ws, \"no active workspace\"); "
-      + "local app_class = " + JSON.stringify(appClass) + "; "
-      + "_G.youtube_control_center_launch_rule = hl.window_rule({ "
-      + "name = \"youtube-control-center-launch\", "
-      + "match = { class = app_class }, "
-      + "workspace = tostring(ws.id) .. \" silent\"}); "
-      + "hl.exec_cmd(" + JSON.stringify(browserCommand) + ")"
+    if (!browserInfoReady) {
+      pendingLaunch = { url: url, appClass: appClass }
+      detectDefaultBrowser()
+      return
+    }
+
+    var isAppCapable = defaultBrowserFamily === "chromium" && defaultBrowserExec.length > 0
+    var commandParts = isAppCapable
+      ? defaultBrowserExec.concat([
+          "--no-first-run", "--no-default-browser-check", "--new-window", "--app=" + url
+        ])
+      : ["xdg-open", url]
+    var browserCommand = "uwsm-app -- " + commandParts.map(shellQuote).join(" ")
+
+    var lua
+    if (isAppCapable) {
+      lua = "if _G.tube_control_launch_rule then "
+        + "_G.tube_control_launch_rule:set_enabled(false) end; "
+        + "local ws = hl.get_active_workspace(); "
+        + "assert(ws, \"no active workspace\"); "
+        + "local app_class = " + JSON.stringify(appClass) + "; "
+        + "_G.tube_control_launch_rule = hl.window_rule({ "
+        + "name = \"tube-control-launch\", "
+        + "match = { class = app_class }, "
+        + "workspace = tostring(ws.id) .. \" silent\"}); "
+        + "hl.exec_cmd(" + JSON.stringify(browserCommand) + ")"
+    } else {
+      lua = "hl.exec_cmd(" + JSON.stringify(browserCommand) + ")"
+    }
 
     launchProcess.command = ["hyprctl", "eval", lua]
     launchProcess.running = true
-    launchRuleCleanup.restart()
+    if (isAppCapable) launchRuleCleanup.restart()
     popupOpen = false
   }
 
@@ -128,7 +182,7 @@ BarWidget {
     var url = cleanQuery === ""
       ? "https://music.youtube.com/"
       : "https://music.youtube.com/search?q=" + encodeURIComponent(cleanQuery)
-    launchBrowserApp(url, "^chrome-music\\.youtube\\.com__.*$", "youtube-music")
+    launchBrowserApp(url, "^chrome-music\\.youtube\\.com__.*$")
   }
 
   function launchYoutube(query) {
@@ -136,7 +190,7 @@ BarWidget {
     var url = cleanQuery === ""
       ? "https://www.youtube.com/"
       : "https://www.youtube.com/results?search_query=" + encodeURIComponent(cleanQuery)
-    launchBrowserApp(url, "^chrome-www\\.youtube\\.com__.*$", "youtube")
+    launchBrowserApp(url, "^chrome-www\\.youtube\\.com__.*$")
   }
 
   onPopupOpenChanged: {
@@ -150,6 +204,8 @@ BarWidget {
       searchField.focus = false
     }
   }
+
+  Component.onCompleted: root.detectDefaultBrowser()
 
   visible: true
   implicitWidth: youtubeButton.implicitWidth
@@ -482,8 +538,10 @@ BarWidget {
         width: parent.width
         textFormat: Text.PlainText
         text: root.launchFailed
-          ? "Could not open the Chromium app window."
-          : "Independent app profiles allow both rows to play. Sign in once in each app."
+          ? "Could not open the browser window."
+          : (root.defaultBrowserFamily === "chromium"
+              ? "Opens as an app window in your default browser, already signed in."
+              : "Opens in your default browser. For independent windows and volume, set a Chromium-based browser as default.")
         color: root.launchFailed ? Color.urgent : Qt.darker(root.bar.foreground, 1.5)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
@@ -553,6 +611,16 @@ BarWidget {
     }
   }
 
+  Process {
+    id: browserDetectProcess
+    command: [root.pluginDir + "bin/detect-default-browser.sh"]
+    running: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyBrowserInfo(text)
+    }
+  }
+
   Timer {
     id: launchRuleCleanup
     interval: 8000
@@ -562,9 +630,9 @@ BarWidget {
       cleanupProcess.command = [
         "hyprctl",
         "eval",
-        "if _G.youtube_control_center_launch_rule then "
-          + "_G.youtube_control_center_launch_rule:set_enabled(false); "
-          + "_G.youtube_control_center_launch_rule = nil end"
+        "if _G.tube_control_launch_rule then "
+          + "_G.tube_control_launch_rule:set_enabled(false); "
+          + "_G.tube_control_launch_rule = nil end"
       ]
       cleanupProcess.running = true
     }
